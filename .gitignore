@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.py.class
+
+# Virtual environments
+.venv/
+.venv311/
+env/
+venv/
+
+# IDE/editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Outputs and artifacts
+outputs/
+*.log
+
+# Environment / secrets
+.env
+inference.env
+
+# Byte-compiled / caches
+*.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local docker stuff
+**/docker-data/

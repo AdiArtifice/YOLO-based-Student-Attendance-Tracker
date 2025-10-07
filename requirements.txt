@@ -1,0 +1,10 @@
+# Core inference components
+inference-cli>=0.58.0,<0.59.0
+inference-sdk>=0.58.0,<0.59.0
+opencv-python
+Pillow
+python-dotenv
+requests
+
+# (Optional) If opencv-python fails to build on your system, you can instead install:
+# opencv-python-headless

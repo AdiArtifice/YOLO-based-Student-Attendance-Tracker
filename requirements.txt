@@ -5,6 +5,9 @@ opencv-python
 Pillow
 python-dotenv
 requests
+fastapi>=0.112.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
 
 # (Optional) If opencv-python fails to build on your system, you can instead install:
 # opencv-python-headless

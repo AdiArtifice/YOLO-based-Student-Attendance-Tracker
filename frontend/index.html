@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YOLO Attendance Tracker</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0f172a;
+        color: #f8fafc;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      main {
+        background: rgba(15, 23, 42, 0.85);
+        border-radius: 18px;
+        padding: 32px;
+        width: min(720px, 90vw);
+        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.45);
+      }
+      h1 {
+        margin-top: 0;
+        font-size: clamp(2rem, 4vw, 2.75rem);
+        letter-spacing: -0.03em;
+      }
+      p.lead {
+        margin-bottom: 24px;
+        color: #cbd5f5;
+        font-size: 1.05rem;
+      }
+      form {
+        display: grid;
+        gap: 16px;
+      }
+      .file-input {
+        border: 2px dashed rgba(148, 163, 184, 0.8);
+        border-radius: 12px;
+        padding: 20px;
+        background: rgba(15, 23, 42, 0.35);
+        text-align: center;
+        transition: border-color 0.3s ease;
+      }
+      .file-input:hover {
+        border-color: #38bdf8;
+      }
+      input[type="file"] {
+        width: 100%;
+        color: #cbd5f5;
+      }
+      button {
+        background: linear-gradient(135deg, #38bdf8, #6366f1);
+        border: none;
+        border-radius: 999px;
+        color: white;
+        font-size: 1rem;
+        font-weight: 600;
+        padding: 14px 28px;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(99, 102, 241, 0.35);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+      .status {
+        margin-top: 12px;
+        font-weight: 600;
+      }
+      .error {
+        color: #f87171;
+      }
+      .success {
+        color: #4ade80;
+      }
+      .grid {
+        display: grid;
+        gap: 20px;
+        margin-top: 24px;
+      }
+      .panel {
+        background: rgba(21, 32, 66, 0.8);
+        padding: 20px;
+        border-radius: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+      }
+      th {
+        font-weight: 700;
+        color: #94a3b8;
+      }
+      img {
+        max-width: 100%;
+        border-radius: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>YOLO-based Attendance</h1>
+      <p class="lead">
+        Upload a classroom photo to detect students and mark attendance automatically via Roboflow inference.
+      </p>
+      <form id="upload-form">
+        <div class="file-input">
+          <input id="file-input" type="file" accept="image/*" required />
+          <p>PNG / JPG up to 10MB</p>
+        </div>
+        <button id="submit-btn" type="submit">Run Attendance</button>
+        <span id="status" class="status"></span>
+      </form>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Attendance</h2>
+          <table id="attendance-table" hidden>
+            <thead>
+              <tr>
+                <th>Roll Number</th>
+                <th>Status</th>
+                <th>Confidence</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <p id="attendance-empty">No results yet.</p>
+        </section>
+        <section class="panel">
+          <h2>Annotated Preview</h2>
+          <img id="annotated-image" alt="Annotated classroom" hidden />
+          <p id="image-empty">Upload an image to see the annotated result.</p>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const form = document.getElementById('upload-form');
+      const fileInput = document.getElementById('file-input');
+      const statusEl = document.getElementById('status');
+      const submitBtn = document.getElementById('submit-btn');
+      const table = document.getElementById('attendance-table');
+      const tableBody = table.querySelector('tbody');
+      const attendanceEmpty = document.getElementById('attendance-empty');
+      const annotatedImg = document.getElementById('annotated-image');
+      const imageEmpty = document.getElementById('image-empty');
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!fileInput.files.length) {
+          statusEl.textContent = 'Please choose an image.';
+          statusEl.className = 'status error';
+          return;
+        }
+
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+
+        statusEl.textContent = 'Processing...';
+        statusEl.className = 'status';
+        submitBtn.disabled = true;
+
+        try {
+          const response = await fetch('/api/upload', {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));
+            throw new Error(errorData.detail || 'Upload failed');
+          }
+
+          const data = await response.json();
+          renderAttendance(data.attendance || []);
+
+          if (data.annotated_image) {
+            annotatedImg.src = data.annotated_image;
+            annotatedImg.hidden = false;
+            imageEmpty.hidden = true;
+          } else {
+            annotatedImg.hidden = true;
+            annotatedImg.src = '';
+            imageEmpty.hidden = false;
+          }
+
+          statusEl.textContent = data.message || 'Attendance processed.';
+          statusEl.className = 'status success';
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = err.message || 'Processing failed';
+          statusEl.className = 'status error';
+          renderAttendance([]);
+          annotatedImg.hidden = true;
+          annotatedImg.src = '';
+          imageEmpty.hidden = false;
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+
+      function renderAttendance(entries) {
+        tableBody.innerHTML = '';
+        if (!entries.length) {
+          table.hidden = true;
+          attendanceEmpty.hidden = false;
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        entries.forEach((entry) => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${entry.roll_number}</td>
+            <td>${entry.status}</td>
+            <td>${(entry.confidence ?? 0).toFixed(2)}</td>
+          `;
+          fragment.appendChild(row);
+        });
+        tableBody.appendChild(fragment);
+        table.hidden = false;
+        attendanceEmpty.hidden = true;
+      }
+    </script>
+  </body>
+</html>

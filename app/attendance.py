@@ -185,4 +185,3 @@ def _maybe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
-*** End of File

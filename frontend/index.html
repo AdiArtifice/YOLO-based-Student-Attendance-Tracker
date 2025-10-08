@@ -113,6 +113,86 @@
         max-width: 100%;
         border-radius: 12px;
       }
+      .attendance-note {
+        margin-top: 12px;
+        color: #cbd5f5;
+        font-size: 0.95rem;
+      }
+      .preview-button {
+        background: none;
+        border: none;
+        color: #38bdf8;
+        cursor: pointer;
+        font: inherit;
+        padding: 0;
+        text-decoration: underline;
+      }
+      .preview-button:hover,
+      .preview-button:focus {
+        color: #a855f7;
+        outline: none;
+      }
+      .preview-button:disabled,
+      .preview-button.preview-button--disabled {
+        color: rgba(148, 163, 184, 0.6);
+        cursor: not-allowed;
+        text-decoration: none;
+      }
+      body.modal-open {
+        overflow: hidden;
+      }
+      .modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.78);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 50;
+      }
+      .modal[hidden] {
+        display: none;
+      }
+      .modal-content {
+        position: relative;
+        background: rgba(15, 23, 42, 0.95);
+        border-radius: 16px;
+        padding: 24px;
+        max-width: min(420px, 90vw);
+        width: 100%;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.6);
+        text-align: center;
+      }
+      .modal-content h3 {
+        margin-top: 0;
+        margin-bottom: 16px;
+        font-size: 1.4rem;
+      }
+      .modal-content img {
+        width: 100%;
+        border-radius: 12px;
+        margin-bottom: 16px;
+        background: rgba(15, 23, 42, 0.6);
+      }
+      .modal-close {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        border: none;
+        background: transparent;
+        color: #94a3b8;
+        font-size: 1.75rem;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .modal-close:hover {
+        color: #f8fafc;
+      }
+      .modal-details {
+        color: #cbd5f5;
+        font-size: 0.95rem;
+      }
     </style>
   </head>
   <body>
@@ -144,6 +224,9 @@
             <tbody></tbody>
           </table>
           <p id="attendance-empty">No results yet.</p>
+          <p class="attendance-note" id="attendance-instructions" hidden>
+            Click a roll number to inspect the detected face crop and verify the student's identity.
+          </p>
         </section>
         <section class="panel">
           <h2>Annotated Preview</h2>
@@ -153,12 +236,34 @@
       </div>
     </main>
 
+    <div
+      id="crop-modal"
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+      hidden
+    >
+      <div class="modal-content">
+        <button id="modal-close-btn" class="modal-close" type="button" aria-label="Close preview">
+          &times;
+        </button>
+        <h3 id="modal-title">Student Preview</h3>
+        <img id="modal-image" alt="Student crop" />
+        <p id="modal-details" class="modal-details"></p>
+      </div>
+    </div>
+
     <script>
       const API_PORT = '8000';
       const API_BASE =
         window.location.port === API_PORT
           ? `${window.location.protocol}//${window.location.host}`
           : `${window.location.protocol}//${window.location.hostname}:${API_PORT}`;
+      const INSTRUCTION_DEFAULT =
+        "Click a roll number to inspect the detected face crop and verify the student's identity.";
+      const INSTRUCTION_EMPTY =
+        'No face crops were returned by the workflow. Confirm your Roboflow dynamic crop block is enabled and runs after detection.';
 
       const form = document.getElementById('upload-form');
       const fileInput = document.getElementById('file-input');
@@ -167,8 +272,16 @@
       const table = document.getElementById('attendance-table');
       const tableBody = table.querySelector('tbody');
       const attendanceEmpty = document.getElementById('attendance-empty');
+      const attendanceInstructions = document.getElementById('attendance-instructions');
       const annotatedImg = document.getElementById('annotated-image');
       const imageEmpty = document.getElementById('image-empty');
+      const modal = document.getElementById('crop-modal');
+      const modalImage = document.getElementById('modal-image');
+      const modalTitle = document.getElementById('modal-title');
+      const modalDetails = document.getElementById('modal-details');
+      const modalCloseBtn = document.getElementById('modal-close-btn');
+
+      let latestCropMap = createEmptyCropMap();
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -177,6 +290,8 @@
           statusEl.className = 'status error';
           return;
         }
+
+        closeModal();
 
         const file = fileInput.files[0];
         const formData = new FormData();
@@ -198,7 +313,8 @@
           }
 
           const data = await response.json();
-          renderAttendance(data.attendance || []);
+          latestCropMap = normaliseCropMap(data.crops);
+          renderAttendance(data.attendance || [], latestCropMap);
 
           if (data.annotated_image) {
             annotatedImg.src = data.annotated_image;
@@ -216,7 +332,8 @@
           console.error(err);
           statusEl.textContent = err.message || 'Processing failed';
           statusEl.className = 'status error';
-          renderAttendance([]);
+          latestCropMap = createEmptyCropMap();
+          renderAttendance([], latestCropMap);
           annotatedImg.hidden = true;
           annotatedImg.src = '';
           imageEmpty.hidden = false;
@@ -225,27 +342,286 @@
         }
       });
 
-      function renderAttendance(entries) {
+      modalCloseBtn.addEventListener('click', closeModal);
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal) {
+          closeModal();
+        }
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !modal.hidden) {
+          closeModal();
+        }
+      });
+      modalImage.addEventListener('error', () => {
+        if (!modalDetails.textContent.includes('Crop unavailable')) {
+          modalDetails.textContent = modalDetails.textContent
+            ? `${modalDetails.textContent} • Crop unavailable`
+            : 'Crop unavailable';
+        }
+      });
+
+      function renderAttendance(entries, cropMap = createEmptyCropMap()) {
         tableBody.innerHTML = '';
         if (!entries.length) {
           table.hidden = true;
           attendanceEmpty.hidden = false;
+          updateInstructions(0);
           return;
         }
 
         const fragment = document.createDocumentFragment();
+        const fallbackQueue = Array.isArray(cropMap.fallback) ? [...cropMap.fallback] : [];
+        let previewCount = 0;
+
         entries.forEach((entry) => {
+          const resolvedCrop = resolveCrop(entry, cropMap, fallbackQueue);
           const row = document.createElement('tr');
-          row.innerHTML = `
-            <td>${entry.roll_number}</td>
-            <td>${entry.status}</td>
-            <td>${(entry.confidence ?? 0).toFixed(2)}</td>
-          `;
+
+          const rollCell = document.createElement('td');
+          const rollButton = document.createElement('button');
+          rollButton.type = 'button';
+          rollButton.className = 'preview-button';
+          rollButton.textContent = entry.roll_number;
+          rollButton.dataset.rollNumber = entry.roll_number ?? 'Unknown';
+          rollButton.dataset.predictionId = entry.prediction_id ?? '';
+          rollButton.dataset.confidence = typeof entry.confidence === 'number' ? entry.confidence : 0;
+
+          if (resolvedCrop && resolvedCrop.image) {
+            previewCount += 1;
+            const preload = new Image();
+            preload.src = resolvedCrop.image;
+            rollButton.classList.remove('preview-button--disabled');
+            rollButton.disabled = false;
+            rollButton.dataset.cropImage = resolvedCrop.image;
+            rollButton.dataset.cropLabel = resolvedCrop.label ?? entry.roll_number ?? 'Unknown';
+            rollButton.dataset.cropSource = resolvedCrop.source || entry.crop_source || '';
+            if (resolvedCrop.prediction_id) {
+              rollButton.dataset.cropPredictionId = resolvedCrop.prediction_id;
+            }
+            const metadata = resolvedCrop.metadata || entry.crop_metadata || entry.metadata;
+            if (metadata && typeof metadata === 'object') {
+              try {
+                rollButton.dataset.cropMetadata = JSON.stringify(metadata);
+              } catch (error) {
+                delete rollButton.dataset.cropMetadata;
+              }
+            }
+            rollButton.addEventListener('click', handlePreviewClick);
+          } else {
+            rollButton.classList.add('preview-button--disabled');
+            rollButton.disabled = true;
+          }
+
+          rollCell.appendChild(rollButton);
+          row.appendChild(rollCell);
+
+          const statusCell = document.createElement('td');
+          statusCell.textContent = entry.status;
+          row.appendChild(statusCell);
+
+          const confidenceCell = document.createElement('td');
+          confidenceCell.textContent = (entry.confidence ?? 0).toFixed(2);
+          row.appendChild(confidenceCell);
+
           fragment.appendChild(row);
         });
+
         tableBody.appendChild(fragment);
         table.hidden = false;
         attendanceEmpty.hidden = true;
+        updateInstructions(previewCount, entries.length);
+      }
+
+      function resolveCrop(entry, cropMap, fallbackQueue) {
+        if (!entry) {
+          return null;
+        }
+        if (entry.crop_image) {
+          return {
+            image: entry.crop_image,
+            label: entry.crop_label || entry.roll_number,
+            metadata: entry.crop_metadata || entry.metadata || null,
+            prediction_id: entry.crop_prediction_id || entry.prediction_id || null,
+            source: entry.crop_source || 'attendance',
+          };
+        }
+
+        const byPrediction = isPlainObject(cropMap.by_prediction_id) ? cropMap.by_prediction_id : {};
+        const byLabel = isPlainObject(cropMap.by_label) ? cropMap.by_label : {};
+        const byLabelLower = isPlainObject(cropMap.by_label_lower) ? cropMap.by_label_lower : {};
+
+        const predictionId = entry.prediction_id ?? entry.crop_prediction_id ?? entry?.metadata?.prediction_id;
+        if (predictionId !== undefined && predictionId !== null) {
+          const key = String(predictionId).trim();
+          if (key && byPrediction[key]) {
+            const payload = byPrediction[key];
+            return {
+              ...payload,
+              prediction_id: payload.prediction_id || key,
+              source: payload.source || 'prediction_id',
+            };
+          }
+        }
+
+        const rollNumber = entry.roll_number;
+        if (typeof rollNumber === 'string') {
+          const direct = byLabel[rollNumber];
+          if (direct) {
+            return {
+              ...direct,
+              prediction_id: direct.prediction_id || predictionId || null,
+              source: direct.source || 'label',
+            };
+          }
+          const lower = rollNumber.toLowerCase();
+          if (byLabelLower[lower]) {
+            const payload = byLabelLower[lower];
+            return {
+              ...payload,
+              prediction_id: payload.prediction_id || predictionId || null,
+              source: payload.source || 'label',
+            };
+          }
+        }
+
+        if (fallbackQueue && fallbackQueue.length) {
+          const fallback = fallbackQueue.shift();
+          if (fallback && fallback.image) {
+            return {
+              ...fallback,
+              prediction_id: fallback.prediction_id || predictionId || null,
+              source: fallback.source || 'fallback',
+            };
+          }
+        }
+
+        return null;
+      }
+
+      function handlePreviewClick(event) {
+        const button = event.currentTarget;
+        const cropImage = button.dataset.cropImage;
+        if (!cropImage) {
+          return;
+        }
+        const rollNumber = button.dataset.rollNumber || 'Unknown';
+        const cropLabel = button.dataset.cropLabel || rollNumber;
+        const confidence = Number.parseFloat(button.dataset.confidence ?? '0');
+        const source = button.dataset.cropSource || '';
+        let metadata = {};
+        if (button.dataset.cropMetadata) {
+          try {
+            const parsed = JSON.parse(button.dataset.cropMetadata);
+            if (parsed && typeof parsed === 'object') {
+              metadata = parsed;
+            }
+          } catch (error) {
+            metadata = {};
+          }
+        }
+        openModal({
+          rollNumber,
+          cropLabel,
+          cropImage,
+          confidence,
+          metadata,
+          source,
+        });
+      }
+
+      function openModal({ rollNumber, cropLabel, cropImage, confidence, metadata = {}, source = '' }) {
+        modalTitle.textContent = cropLabel || rollNumber || 'Student Preview';
+        modalImage.src = cropImage;
+        modalImage.alt = `Crop for ${rollNumber || 'student'}`;
+        const parts = [];
+        if (rollNumber) parts.push(`Roll Number: ${rollNumber}`);
+        if (Number.isFinite(confidence)) {
+          parts.push(`Confidence ${(confidence * 100).toFixed(1)}%`);
+        }
+        if (metadata && typeof metadata === 'object') {
+          if (metadata.roll_number && metadata.roll_number !== rollNumber) {
+            parts.push(`Workflow: ${metadata.roll_number}`);
+          } else if (metadata.label && metadata.label !== cropLabel) {
+            parts.push(`Workflow: ${metadata.label}`);
+          }
+        }
+        if (source) {
+          parts.push(`Source: ${formatCropSource(source)}`);
+        }
+        modalDetails.textContent = parts.join(' • ');
+        modal.hidden = false;
+        document.body.classList.add('modal-open');
+      }
+
+      function closeModal() {
+        if (modal.hidden) {
+          return;
+        }
+        modal.hidden = true;
+        modalImage.src = '';
+        modalTitle.textContent = '';
+        modalDetails.textContent = '';
+        document.body.classList.remove('modal-open');
+      }
+
+      function updateInstructions(previewCount, total = 0) {
+        if (!attendanceInstructions) {
+          return;
+        }
+        if (!total) {
+          attendanceInstructions.hidden = true;
+          return;
+        }
+        if (previewCount > 0) {
+          attendanceInstructions.hidden = false;
+          attendanceInstructions.textContent = INSTRUCTION_DEFAULT;
+        } else {
+          attendanceInstructions.hidden = false;
+          attendanceInstructions.textContent = INSTRUCTION_EMPTY;
+        }
+      }
+
+      function normaliseCropMap(raw) {
+        if (!isPlainObject(raw)) {
+          return createEmptyCropMap();
+        }
+        const byPrediction = isPlainObject(raw.by_prediction_id) ? raw.by_prediction_id : {};
+        const byLabel = isPlainObject(raw.by_label) ? raw.by_label : {};
+        const byLabelLower = {};
+        Object.keys(byLabel).forEach((key) => {
+          if (typeof key === 'string') {
+            byLabelLower[key.toLowerCase()] = byLabel[key];
+          }
+        });
+        const fallback = Array.isArray(raw.fallback)
+          ? raw.fallback.filter((item) => isPlainObject(item) && item.image)
+          : [];
+        return {
+          by_prediction_id: byPrediction,
+          by_label: byLabel,
+          by_label_lower: byLabelLower,
+          fallback,
+        };
+      }
+
+      function createEmptyCropMap() {
+        return { by_prediction_id: {}, by_label: {}, by_label_lower: {}, fallback: [] };
+      }
+
+      function isPlainObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+      }
+
+      function formatCropSource(source) {
+        const lookup = {
+          attendance: 'Attached to attendance entry',
+          'prediction_id': 'Matched by prediction',
+          prediction: 'Matched by prediction',
+          label: 'Matched by label',
+          fallback: 'Fallback crop',
+        };
+        return lookup[source] || source;
       }
     </script>
   </body>

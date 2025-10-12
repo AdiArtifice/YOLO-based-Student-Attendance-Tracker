@@ -255,11 +255,8 @@
     </div>
 
     <script>
-      const API_PORT = '8000';
-      const API_BASE =
-        window.location.port === API_PORT
-          ? `${window.location.protocol}//${window.location.host}`
-          : `${window.location.protocol}//${window.location.hostname}:${API_PORT}`;
+      // Use relative API base so it works on localhost and Azure App Service (80/443)
+      const API_BASE = '';
       const INSTRUCTION_DEFAULT =
         "Click a roll number to inspect the detected face crop and verify the student's identity.";
       const INSTRUCTION_EMPTY =
@@ -302,7 +299,7 @@
         submitBtn.disabled = true;
 
         try {
-          const response = await fetch(`${API_BASE}/api/upload`, {
+          const response = await fetch(`/api/upload`, {
             method: 'POST',
             body: formData,
           });

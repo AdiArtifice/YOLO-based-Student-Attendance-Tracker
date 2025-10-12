@@ -105,7 +105,14 @@ Both *Client* and *Server* sections must show up.
 
 ### 1. Launch the Roboflow Inference server (local mode)
 
+Load your `.env` values into the current PowerShell session, then launch the server:
+
 ```powershell
+(Get-Content .env | Where-Object { $_ -match '=' }) |
+	ForEach-Object {
+		$name, $value = $_ -split '=', 2
+		Set-Item -Path "Env:$name" -Value $value
+	}
 inference server start --port 9001 --roboflow-api-key $env:ROBOFLOW_API_KEY
 ```
 
@@ -188,6 +195,60 @@ Flags:
 
 Log output from `uvicorn` and the inference server is extremely helpful—keep terminals open while testing.
 
+---
+
+## ☁️ Deploying to Azure App Service (Linux, Container)
+
+Azure App Service only exposes ports 80/443 publicly and internally maps traffic to your container’s `WEBSITES_PORT` (commonly 8000). Don’t append `:8000` in browser URLs—the frontend must call the API via relative paths so Azure routes over 443 automatically.
+
+Key points
+
+- Frontend API URLs: use relative paths like `/api/upload` and `/api/health` (already configured in `frontend/index.html`). Avoid `https://<app>.azurewebsites.net:8000/...`.
+- App binding: the backend should listen on `0.0.0.0:8000`, and your App Setting must include `WEBSITES_PORT=8000`.
+- OpenCV runtime deps: ensure your image installs `libgl1` and `libglib2.0-0` so `import cv2` works on App Service Linux.
+
+Reference Dockerfile snippet
+
+```
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+Redeploy steps (example)
+
+```powershell
+# 1) Build locally
+docker build -t attendance-app:latest .
+
+# 2) Tag for your Azure Container Registry (replace placeholders)
+docker tag attendance-app:latest attendanceregistry1ev0qu.azurecr.io/attendance-app:v2
+
+# 3) Push to ACR
+docker push attendanceregistry1ev0qu.azurecr.io/attendance-app:v2
+
+# 4) Configure Web App to use the new tag (or in Portal) and restart
+# If already configured to track :latest and it doesn’t refresh, switching to a new tag forces a re-pull
+az webapp restart -g rg-attendance-tracker -n attendance-tracker-webapp1ev0qu
+```
+
+Validation
+
+- Open `https://attendance-tracker-webapp1ev0qu.azurewebsites.net/api/health` and expect `{ "status": "ok" }`.
+- In DevTools → Network, confirm requests go to `/api/...` (no port suffix) and return 2xx.
+- Tail logs while testing:
+
+```powershell
+az webapp log tail -g rg-attendance-tracker -n attendance-tracker-webapp1ev0qu
+```
+
+If you previously saw `ImportError: libGL.so.1`, confirm the Docker image includes `libgl1` (and `libglib2.0-0`) and that the app pulled the updated image tag.
+
 ### Dynamic Crop debugging checklist
 
 1. **Verify class names** – Run `python test-roboflow.py --image <file> --json` and inspect the generated `_raw.json` or the API response `debug.detection_classes`. The crop filter must match the detected class exactly (case-sensitive `student-faces`).
@@ -226,3 +287,43 @@ Bug reports and feature suggestions are welcome via issues or discussions.
 ## 📄 License
 
 This project is intended for internal and educational use. Adapt or extend it responsibly—especially when handling student data.
+
+---
+
+## 🔁 Update Steps (Rebuild & Redeploy)
+
+When you tweak the frontend or backend and want to redeploy to Azure App Service, follow these steps.
+
+1) Edit your frontend as needed locally, then rebuild the Docker image to include the updated frontend:
+
+```powershell
+docker build -t attendance-app:latest .
+```
+
+2) Tag the updated image for Azure Container Registry (ACR):
+
+```powershell
+docker tag attendance-app:latest attendanceregistry1ev0qu.azurecr.io/attendance-app:<newtag>
+```
+
+Use the same tag (e.g., `latest`), or increment a version (e.g., `v3`) to ensure Azure pulls the latest image.
+
+3) Push the updated image to ACR:
+
+```powershell
+docker push attendanceregistry1ev0qu.azurecr.io/attendance-app:<newtag>
+```
+
+4) Update Azure App Service to use the new image tag (if you changed the tag):
+
+```powershell
+az webapp config container set -g rg-attendance-tracker -n attendance-tracker-webapp1ev0qu --docker-custom-image-name attendanceregistry1ev0qu.azurecr.io/attendance-app:<newtag> --docker-registry-server-url https://attendanceregistry1ev0qu.azurecr.io
+```
+
+5) Restart the App Service to pull and run your updated container:
+
+```powershell
+az webapp restart -g rg-attendance-tracker -n attendance-tracker-webapp1ev0qu
+```
+
+After these steps, your changes will be live at the Azure web app URL. Refresh the page in your browser to verify the updated interface and features.

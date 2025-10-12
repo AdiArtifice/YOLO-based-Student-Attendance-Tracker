@@ -4,6 +4,7 @@ import base64
 import io
 import os
 from dataclasses import dataclass
+import time
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -159,12 +160,32 @@ def _ensure_client() -> InferenceHTTPClient:
 
 
 def run_workflow(image_path: Path) -> Dict[str, Any]:
+    """Call Roboflow workflow with basic retries to handle transient errors.
+
+    Env overrides:
+    - WORKFLOW_RETRIES: int (default 3)
+    - WORKFLOW_BACKOFF: float base seconds (default 0.75)
+    """
     client = _ensure_client()
-    return client.run_workflow(
-        workspace_name=ROBOFLOW_WORKSPACE,
-        workflow_id=ROBOFLOW_WORKFLOW,
-        images={"image": str(image_path)},
-    )
+    retries = int(os.environ.get("WORKFLOW_RETRIES", "3"))
+    backoff_base = float(os.environ.get("WORKFLOW_BACKOFF", "0.75"))
+    last_err: Optional[Exception] = None
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            return client.run_workflow(
+                workspace_name=ROBOFLOW_WORKSPACE,
+                workflow_id=ROBOFLOW_WORKFLOW,
+                images={"image": str(image_path)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            if attempt < retries:
+                sleep_s = backoff_base * (2 ** (attempt - 1))
+                time.sleep(sleep_s)
+            else:
+                raise RuntimeError(
+                    f"Roboflow workflow failed after {retries} attempts: {exc}"
+                ) from exc
 
 
 def extract_predictions(result: Dict[str, Any]) -> List[Prediction]:

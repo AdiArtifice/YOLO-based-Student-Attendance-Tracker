@@ -1,0 +1,17 @@
+services:
+  attendance-app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    restart: unless-stopped
+
+# Build image
+# docker build -t attendance-app .
+# Run locally
+# docker run --env-file .env -p 8000:8000 attendance-app
+# Or with Compose
+# docker-compose up --build
+# Test
+# visit http://localhost:8000 and http://localhost:8000/docs

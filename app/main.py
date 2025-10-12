@@ -12,6 +12,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, field_validator
 
 load_dotenv()
 
@@ -210,3 +211,32 @@ async def upload_image(file: UploadFile = File(...)) -> JSONResponse:
 
 
 __all__ = ["app"]
+
+
+# ------------------------ Inline Edit API ------------------------
+class AttendanceUpdate(BaseModel):
+    row_id: int
+    roll_number: str
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v: str) -> str:
+        allowed = {"present", "absent"}
+        lv = (v or "").strip().lower()
+        if lv not in allowed:
+            raise ValueError(f"status must be one of {sorted(allowed)}")
+        return lv
+
+
+@app.post("/api/attendance/update", response_class=JSONResponse)
+async def attendance_update(payload: AttendanceUpdate) -> JSONResponse:
+    try:
+        updated = {
+            "row_id": payload.row_id,
+            "roll_number": payload.roll_number.strip(),
+            "status": payload.status.strip().lower(),
+        }
+        return JSONResponse({"ok": True, "updated": updated})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

@@ -255,8 +255,11 @@
     </div>
 
     <script>
-      // Use relative API base so it works on localhost and Azure App Service (80/443)
-      const API_BASE = '';
+      // API base selection:
+      // - In production/Azure: use relative paths so 443 is mapped to WEBSITES_PORT internally
+      // - In local dev when opening the static file server (e.g., Live Server on :5500):
+      //   direct API calls to the FastAPI backend on :8000 to avoid 405s from the static server
+      const API_BASE = (window.location.port === '5500') ? 'http://localhost:8000' : '';
       const INSTRUCTION_DEFAULT =
         "Click a roll number to inspect the detected face crop and verify the student's identity.";
       const INSTRUCTION_EMPTY =
@@ -279,6 +282,7 @@
       const modalCloseBtn = document.getElementById('modal-close-btn');
 
       let latestCropMap = createEmptyCropMap();
+  let currentAttendanceEntries = [];
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -299,7 +303,7 @@
         submitBtn.disabled = true;
 
         try {
-          const response = await fetch(`/api/upload`, {
+          const response = await fetch(`${API_BASE}/api/upload`, {
             method: 'POST',
             body: formData,
           });
@@ -311,7 +315,8 @@
 
           const data = await response.json();
           latestCropMap = normaliseCropMap(data.crops);
-          renderAttendance(data.attendance || [], latestCropMap);
+          currentAttendanceEntries = Array.isArray(data.attendance) ? data.attendance : [];
+          renderAttendance(currentAttendanceEntries, latestCropMap);
 
           if (data.annotated_image) {
             annotatedImg.src = data.annotated_image;
@@ -371,55 +376,91 @@
         const fallbackQueue = Array.isArray(cropMap.fallback) ? [...cropMap.fallback] : [];
         let previewCount = 0;
 
-        entries.forEach((entry) => {
+        entries.forEach((entry, index) => {
           const resolvedCrop = resolveCrop(entry, cropMap, fallbackQueue);
           const row = document.createElement('tr');
+          row.dataset.rowId = String(index);
 
           const rollCell = document.createElement('td');
-          const rollButton = document.createElement('button');
-          rollButton.type = 'button';
-          rollButton.className = 'preview-button';
-          rollButton.textContent = entry.roll_number;
-          rollButton.dataset.rollNumber = entry.roll_number ?? 'Unknown';
-          rollButton.dataset.predictionId = entry.prediction_id ?? '';
-          rollButton.dataset.confidence = typeof entry.confidence === 'number' ? entry.confidence : 0;
+          const rollViewBtn = document.createElement('button');
+          rollViewBtn.type = 'button';
+          rollViewBtn.className = 'preview-button';
+          rollViewBtn.textContent = entry.roll_number;
+          rollViewBtn.dataset.rollNumber = entry.roll_number ?? 'Unknown';
+          rollViewBtn.dataset.predictionId = entry.prediction_id ?? '';
+          rollViewBtn.dataset.confidence = typeof entry.confidence === 'number' ? entry.confidence : 0;
 
           if (resolvedCrop && resolvedCrop.image) {
             previewCount += 1;
             const preload = new Image();
             preload.src = resolvedCrop.image;
-            rollButton.classList.remove('preview-button--disabled');
-            rollButton.disabled = false;
-            rollButton.dataset.cropImage = resolvedCrop.image;
-            rollButton.dataset.cropLabel = resolvedCrop.label ?? entry.roll_number ?? 'Unknown';
-            rollButton.dataset.cropSource = resolvedCrop.source || entry.crop_source || '';
+            rollViewBtn.classList.remove('preview-button--disabled');
+            rollViewBtn.disabled = false;
+            rollViewBtn.dataset.cropImage = resolvedCrop.image;
+            rollViewBtn.dataset.cropLabel = resolvedCrop.label ?? entry.roll_number ?? 'Unknown';
+            rollViewBtn.dataset.cropSource = resolvedCrop.source || entry.crop_source || '';
             if (resolvedCrop.prediction_id) {
-              rollButton.dataset.cropPredictionId = resolvedCrop.prediction_id;
+              rollViewBtn.dataset.cropPredictionId = resolvedCrop.prediction_id;
             }
             const metadata = resolvedCrop.metadata || entry.crop_metadata || entry.metadata;
             if (metadata && typeof metadata === 'object') {
               try {
-                rollButton.dataset.cropMetadata = JSON.stringify(metadata);
+                rollViewBtn.dataset.cropMetadata = JSON.stringify(metadata);
               } catch (error) {
-                delete rollButton.dataset.cropMetadata;
+                delete rollViewBtn.dataset.cropMetadata;
               }
             }
-            rollButton.addEventListener('click', handlePreviewClick);
+            rollViewBtn.addEventListener('click', handlePreviewClick);
           } else {
-            rollButton.classList.add('preview-button--disabled');
-            rollButton.disabled = true;
+            rollViewBtn.classList.add('preview-button--disabled');
+            rollViewBtn.disabled = true;
           }
 
-          rollCell.appendChild(rollButton);
+          const rollEditInput = document.createElement('input');
+          rollEditInput.type = 'text';
+          rollEditInput.value = entry.roll_number ?? '';
+          rollEditInput.style.display = 'none';
+          rollEditInput.setAttribute('aria-label', 'Edit roll number');
+
+          rollCell.appendChild(rollViewBtn);
+          rollCell.appendChild(rollEditInput);
           row.appendChild(rollCell);
 
           const statusCell = document.createElement('td');
-          statusCell.textContent = entry.status;
+          const statusViewSpan = document.createElement('span');
+          statusViewSpan.textContent = entry.status;
+          const statusEditSelect = createStatusSelect(entry.status);
+          statusEditSelect.style.display = 'none';
+          statusCell.appendChild(statusViewSpan);
+          statusCell.appendChild(statusEditSelect);
           row.appendChild(statusCell);
 
           const confidenceCell = document.createElement('td');
           confidenceCell.textContent = (entry.confidence ?? 0).toFixed(2);
           row.appendChild(confidenceCell);
+
+          // Actions cell for Edit/Save/Cancel
+          const actionsCell = document.createElement('td');
+          const editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.textContent = 'Edit';
+          const saveBtn = document.createElement('button');
+          saveBtn.type = 'button';
+          saveBtn.textContent = 'Save';
+          saveBtn.style.display = 'none';
+          const cancelBtn = document.createElement('button');
+          cancelBtn.type = 'button';
+          cancelBtn.textContent = 'Cancel';
+          cancelBtn.style.display = 'none';
+
+          editBtn.addEventListener('click', () => enterEditMode(row, { rollViewBtn, rollEditInput, statusViewSpan, statusEditSelect, editBtn, saveBtn, cancelBtn }));
+          saveBtn.addEventListener('click', () => saveRowUpdate(row, { rollViewBtn, rollEditInput, statusViewSpan, statusEditSelect, editBtn, saveBtn, cancelBtn }));
+          cancelBtn.addEventListener('click', () => exitEditMode(row, { rollViewBtn, rollEditInput, statusViewSpan, statusEditSelect, editBtn, saveBtn, cancelBtn }, /*reset=*/true));
+
+          actionsCell.appendChild(editBtn);
+          actionsCell.appendChild(saveBtn);
+          actionsCell.appendChild(cancelBtn);
+          row.appendChild(actionsCell);
 
           fragment.appendChild(row);
         });
@@ -428,6 +469,83 @@
         table.hidden = false;
         attendanceEmpty.hidden = true;
         updateInstructions(previewCount, entries.length);
+      }
+
+      function createStatusSelect(current) {
+        const select = document.createElement('select');
+        const values = ['present', 'absent'];
+        values.forEach((v) => {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v;
+          if ((current || '').toLowerCase() === v) {
+            opt.selected = true;
+          }
+          select.appendChild(opt);
+        });
+        return select;
+      }
+
+      function enterEditMode(row, refs) {
+        row.dataset.editing = '1';
+        refs.rollViewBtn.style.display = 'none';
+        refs.rollEditInput.style.display = '';
+        refs.statusViewSpan.style.display = 'none';
+        refs.statusEditSelect.style.display = '';
+        refs.editBtn.style.display = 'none';
+        refs.saveBtn.style.display = '';
+        refs.cancelBtn.style.display = '';
+      }
+
+      function exitEditMode(row, refs, reset = false) {
+        if (reset) {
+          // restore inputs from current view text
+          refs.rollEditInput.value = refs.rollViewBtn.textContent || '';
+          const desired = (refs.statusViewSpan.textContent || '').toLowerCase();
+          Array.from(refs.statusEditSelect.options).forEach((opt) => {
+            opt.selected = (opt.value === desired);
+          });
+        }
+        delete row.dataset.editing;
+        refs.rollViewBtn.style.display = '';
+        refs.rollEditInput.style.display = 'none';
+        refs.statusViewSpan.style.display = '';
+        refs.statusEditSelect.style.display = 'none';
+        refs.editBtn.style.display = '';
+        refs.saveBtn.style.display = 'none';
+        refs.cancelBtn.style.display = 'none';
+      }
+
+      async function saveRowUpdate(row, refs) {
+        const rowId = Number.parseInt(row.dataset.rowId || '-1', 10);
+        const newRoll = refs.rollEditInput.value.trim();
+        const newStatus = (refs.statusEditSelect.value || '').toLowerCase();
+        // Optimistic UI disable
+        refs.saveBtn.disabled = true;
+        refs.cancelBtn.disabled = true;
+        try {
+          const resp = await fetch(`${API_BASE}/api/attendance/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ row_id: rowId, roll_number: newRoll, status: newStatus }),
+          });
+          const payload = await resp.json().catch(() => ({ ok: false, error: 'Invalid server response' }));
+          if (!resp.ok || !payload.ok) {
+            throw new Error(payload.error || 'Update failed');
+          }
+          const updated = payload.updated || {};
+          // Update UI from server echo
+          refs.rollViewBtn.textContent = updated.roll_number || newRoll || '';
+          refs.rollViewBtn.dataset.rollNumber = updated.roll_number || newRoll || '';
+          refs.statusViewSpan.textContent = updated.status || newStatus || '';
+          exitEditMode(row, refs, /*reset=*/false);
+        } catch (e) {
+          console.error(e);
+          alert(e.message || 'Update failed');
+        } finally {
+          refs.saveBtn.disabled = false;
+          refs.cancelBtn.disabled = false;
+        }
       }
 
       function resolveCrop(entry, cropMap, fallbackQueue) {
